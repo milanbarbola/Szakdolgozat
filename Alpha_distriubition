@@ -1,0 +1,228 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import math
+import matplotlib
+from google.colab import drive
+from scipy.optimize import curve_fit
+
+
+#read in and clean hits
+path = '/content/gdrive/MyDrive/Colab Notebooks/files/1712592530_1d4aa3d9-a350-4ab4-91da-e622959f3f38_water_100000Primaries_1.hits.npy'
+df = pd.DataFrame(np.load(path))
+df['Layer'] = 2 * df['volumeID[2]'] + df['volumeID[3]']
+df_clean = df[(df['PDGEncoding']==2212) & (df['parentID']==0)][['eventID','posX','posY','Layer','edep','momDirX','momDirY','momDirZ']]
+events = df_clean["eventID"].unique() 
+print(f"Clean Dataset is {len(df_clean)} lines long and has {len(events)} events")
+
+
+#read in and clean psa
+path_psa = '/content/gdrive//MyDrive/Colab Notebooks/files/1712592530_1d4aa3d9-a350-4ab4-91da-e622959f3f38_water_100000Primaries_1_detector_PSA.npy'
+df_psa = pd.DataFrame(np.load(path_psa))
+df_psa_clean = df_psa[(df_psa['ParticleName'] == b'proton') & (df_psa['ParentID']==0)][['Ekine','EventID']]
+psa_events = df_psa_clean['EventID'].unique()
+print(f"PSA Dataset is {len(df_psa_clean)} lines long and has {len(psa_events)} events")
+
+
+
+# select all full tracks
+num = 2
+layers = df_clean["Layer"].unique() 
+print(f"max layer is {max(layers)}")
+layer_counts = df_clean.groupby('eventID')['Layer'].count() 
+full_tracks = layer_counts[layer_counts == 23].index.tolist() 
+df_track = df_clean[df_clean['eventID'] == full_tracks[0]] 
+
+
+
+# load in wet data
+wet_p = np.genfromtxt('/content/gdrive/MyDrive/Colab Notebooks/files/layer_wet_wepl_Proton.csv', delimiter = ' ')
+#!!!!!!!!! be carefull about waterthicknes
+water_thicknes = 160
+wet_p += water_thicknes
+
+
+
+# creating a weight
+num_layers = 23
+weights1 = np.zeros(num_layers)
+max_weight = 1.0
+for i in range(num_layers):
+    weights1[i] = max_weight * (i + 1) / num_layers
+print("Rétegszámok:", layers[:-num])
+print("Súlyok:", weights1)
+
+
+
+def gaussian(x,gamma, mu):
+  return (1/(gamma * (2*np.pi)**0.5 ))*np.exp(-0.5*((x-mu)/gamma)**2)
+
+
+#Átlag energia veszteség ábrázolása plusz egy trackhez tartozó energia veszteség ábrázolása
+
+mean_y = np.zeros(23 ) # létrehozok egy nullákat tartalmazó arrayt
+num = np.zeros(23)
+
+for eid in full_tracks:
+  x = df_clean[df_clean['eventID'] == eid].to_numpy() # ez ugyan olyasmi mint a df_track formára legalábbis
+  mean_y[[int(y) for y in x[:,3]]] += x[:,4]
+  num[[int(y) for y in x[:,3]]] += 1
+
+mean_y/=num
+
+p = 1.736
+df_track = df_clean[df_clean['eventID'] == full_tracks[22]]
+
+plt.figure(figsize = [10,6])
+plt.scatter(wet_p[df_track['Layer'],1],df_track['edep']**(p/(1.-p)))
+plt.scatter(wet_p[np.arange(len(mean_y)),1],mean_y**(p/(1.-p)))
+
+plt.xlabel('WET (mm)',fontsize = 16)
+plt.ylabel('$\delta E \\frac{p}{1-p}$',fontsize = 16)
+plt.xticks(fontsize = 14)
+plt.yticks(fontsize = 14)
+plt.grid(True)
+
+
+#Alpha értékek eloszlása
+
+p = 1.736
+alpha = 0.02387
+water_thicknes = 160
+
+true_energy = []
+
+E01_list = []
+R01_list = []
+beta1_list = []
+b1_list = []
+
+E02_list = []
+R02_list = []
+beta2_list = []
+b2_list = []
+
+for num_track in range(len(full_tracks)):
+  energy = (df_psa_clean[df_psa_clean['EventID'] == full_tracks[num_track]]['Ekine']).iloc[0]
+  df_track = df_clean[df_clean['eventID'] == full_tracks[num_track]]
+  # itt illesztek egy egyenest a df_track adatokra w-nélkül
+  fitp1 = np.polyfit(wet_p[df_track['Layer'],1], (df_track['edep'])**(p/(1.-p)),1)
+  fit1 = np.poly1d(fitp1)
+  R01 = -fitp1[1] / fitp1[0]
+  E01 = ((R01-water_thicknes)/alpha)**(1./p)
+  E01_list.append(E01)
+  R01_list.append(R01)
+  beta1_list.append(fitp1[0])
+  b1_list.append(fitp1[1])
+  true_energy.append(energy)
+
+  # itt pedig w-el
+  fitp2 = np.polyfit(wet_p[df_track['Layer'],1], df_track['edep']**(p/(1.-p)),1,w = weights1)
+  fit2 = np.poly1d(fitp2)
+  R02 = -fitp2[1] / fitp2[0]
+  E02 = ((R02-water_thicknes)/alpha)**(1./p)
+  E02_list.append(E02)
+  R02_list.append(R02)
+  beta2_list.append(fitp2[0])
+  b2_list.append(fitp2[1])
+
+alpha = ((0.025/p)**p)*((abs(np.array(beta2_list)))**(p-1))
+alpha = alpha[alpha < 0.04]
+
+plt.figure(figsize = [8,6])
+hist_adat = plt.hist(alpha, bins=100, density=True, color='r')
+bins = (hist_adat[1][1:] + hist_adat[1][:-1]) *0.5
+
+popt,pcov = curve_fit(gaussian,bins,hist_adat[0])
+# print(['gamma','mu'])
+# print(popt)
+
+plt.plot(bins, hist_adat[0], label='Histogram ')
+# Gauss-görbe kirajzolása
+plt.plot(bins, gaussian(bins,*popt), 'k', linewidth=2, label=f'Gauss illesztés \n$\mu={popt[1]:.4f}$, $\sigma={popt[0]:.4f}$')
+
+
+
+
+plt.xlabel('Alpha',fontsize = 16)
+plt.ylabel('Alpha eloszlás',fontsize = 16)
+plt.xticks(fontsize = 14)
+plt.yticks(fontsize = 14)
+plt.legend(fontsize = 10)
+plt.grid(True)
+
+
+#Illesztett energia és a valódi energia különbségének az eloszlása különböző alpha paraméterek mellett
+
+p = 1.736
+alpha = 0.027
+water_thicknes = 160
+
+
+true_energy = []
+
+E01_list = []
+R01_list = []
+beta1_list = []
+b1_list = []
+
+E02_list = []
+R02_list = []
+beta2_list = []
+b2_list = []
+
+for num_track in range(len(full_tracks)):
+  energy = (df_psa_clean[df_psa_clean['EventID'] == full_tracks[num_track]]['Ekine']).iloc[0]
+  df_track = df_clean[df_clean['eventID'] == full_tracks[num_track]]
+  # itt illesztek egy egyenest a df_track adatokra w-nélkül
+  fitp1 = np.polyfit(wet_p[df_track['Layer'],1], (df_track['edep'])**(p/(1.-p)),1)
+  fit1 = np.poly1d(fitp1)
+  R01 = -fitp1[1] / fitp1[0]
+  E01 = ((R01-water_thicknes)/alpha)**(1./p)
+  E01_list.append(E01)
+  R01_list.append(R01)
+  beta1_list.append(fitp1[0])
+  b1_list.append(fitp1[1])
+  true_energy.append(energy)
+
+  # itt pedig w-el
+  fitp2 = np.polyfit(wet_p[df_track['Layer'],1], df_track['edep']**(p/(1.-p)),1,w = weights1)
+  fit2 = np.poly1d(fitp2)
+  R02 = -fitp2[1] / fitp2[0]
+  E02 = ((R02-water_thicknes)/alpha)**(1./p)
+  E02_list.append(E02)
+  R02_list.append(R02)
+  beta2_list.append(fitp2[0])
+  b2_list.append(fitp2[1])
+
+energia = np.array(E01_list)-np.array(true_energy)
+energia = energia[energia<40]
+energia = energia[energia>-30]
+
+plt.figure(figsize = [8,6])
+hist_adat = plt.hist(energia,bins=100,density=True)
+bins = (hist_adat[1][1:] + hist_adat[1][:-1]) * 0.5
+popt,pcov = curve_fit(gaussian,bins,hist_adat[0],p0 = [8.3,10])
+plt.plot(bins, hist_adat[0], label='Histogram ')
+plt.plot(np.linspace(-40,40,1000), gaussian(np.linspace(-40,40,1000),*popt), 'k', linewidth=2, label=f'Gauss illesztés \n$\mu={popt[1]:.4f}$, $\sigma={popt[0]:.4f}$,\n$\\alpha={0.027}$')
+
+plt.xlabel('Energiakülönbség',fontsize = 16)
+plt.ylabel('p($\\Delta E$)',fontsize = 16)
+plt.xticks(fontsize = 14)
+plt.yticks(fontsize = 14)
+plt.legend(fontsize = 10,loc = 'upper left')
+plt.grid(True)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
