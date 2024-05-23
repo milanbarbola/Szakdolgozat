@@ -1,0 +1,85 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import math
+import warnings
+import matplotlib
+from google.colab import drive
+from scipy.optimize import curve_fit
+
+
+#read in and clean hits
+path = '/content/gdrive/MyDrive/Colab Notebooks/files/1712592530_1d4aa3d9-a350-4ab4-91da-e622959f3f38_water_100000Primaries_1.hits.npy'
+df = pd.DataFrame(np.load(path))
+df['Layer'] = 2 * df['volumeID[2]'] + df['volumeID[3]'] 
+df_clean = df[(df['PDGEncoding']==2212) & (df['parentID']==0)][['eventID','posX','posY','posZ','Layer','edep','momDirX','momDirY','momDirZ']] 
+events = df_clean["eventID"].unique() 
+print(f"Dataset is {len(df_clean)} lines long and has {len(events)} events")
+
+
+#read in a clean psa
+path = '/content/gdrive/MyDrive/Colab Notebooks/files/1712592530_1d4aa3d9-a350-4ab4-91da-e622959f3f38_water_100000Primaries_1_detector_PSA.npy'
+df_psa = pd.DataFrame(np.load(path))
+df_psa_clean = df_psa[(df_psa['ParticleName'] == b'proton') & (df_psa['ParentID']==0)][['Ekine','EventID','dX','dY','dZ']]
+psa_events = df_psa_clean['EventID'].unique()
+print(f"PSA Dataset is {len(df_psa_clean)} lines long and has {len(psa_events)} events")
+
+
+
+full_tracks = df_clean[df_clean['Layer'] == 1][['eventID']].drop_duplicates()
+
+filtered_df_clean = df_clean[df_clean['eventID'].isin(full_tracks['eventID'])][['eventID', 'posX', 'posY', 'posZ', 'Layer']]
+filtered_df_psa_clean = df_psa_clean[df_psa_clean['EventID'].isin(full_tracks['eventID'])][['EventID', 'dX','dY','dZ']]
+
+grouped_tracks = filtered_df_clean.groupby('eventID').head(2)
+unique_event_ids = grouped_tracks['eventID'].unique()
+
+results = []
+
+for event_id in unique_event_ids:
+    group = grouped_tracks[grouped_tracks['eventID'] == event_id]
+
+    vec_x = group['posX'].iloc[1] - group['posX'].iloc[0]
+    vec_y = group['posY'].iloc[1] - group['posY'].iloc[0]
+    vec_z = group['posZ'].iloc[1] - group['posZ'].iloc[0]
+
+    vec_len = np.sqrt(vec_x**2 + vec_y**2 + vec_z**2)
+
+    egyseg_vec_x = vec_x / vec_len
+    egyseg_vec_y = vec_y / vec_len
+    egyseg_vec_z = vec_z / vec_len
+
+    results.append({'eventID': event_id, 'egyseg_vec_x': egyseg_vec_x, 'egyseg_vec_y':egyseg_vec_y, 'egyseg_vec_z': egyseg_vec_z})
+
+result_df = pd.DataFrame(results)
+merged_df = pd.merge(result_df, filtered_df_psa_clean, left_on='eventID', right_on='EventID')
+merged_df['scalar_product'] = merged_df['egyseg_vec_x'] * merged_df['dX'] + merged_df['egyseg_vec_y'] * merged_df['dY'] + merged_df['egyseg_vec_z'] * merged_df['dZ']
+
+merged_df['szog_rad'] = np.arccos(np.minimum(1.0, merged_df['scalar_product']))
+merged_df['szog_fok'] = np.degrees(merged_df['szog_rad'])
+
+
+def gaussian(x,gamma, mu):
+  return (1/(gamma * (2*np.pi)**0.5 ))*np.exp(-0.5*((x-mu)/gamma)**2)
+
+
+szog = np.array(merged_df['szog_fok'])
+szog = szog[szog<1]
+szog = szog[szog>-1]
+
+
+plt.figure(figsize = [8,6])
+hist_adat = plt.hist(szog,bins=100,density=True)
+bins = (hist_adat[1][1:] + hist_adat[1][:-1]) * 0.5
+popt,pcov = curve_fit(gaussian,bins,hist_adat[0],p0 = [8.3,10])
+plt.plot(bins, hist_adat[0], label='Histogram ')
+plt.plot(np.linspace(-1,1,1000), gaussian(np.linspace(-1,1,1000),*popt), 'k', linewidth=2, label=f'Gauss illesztés \n$\mu={popt[1]:.4f}$, $\sigma={popt[0]:.4f}$')
+
+plt.xlabel('szögeltérés [$\degree$]',fontsize = 16)
+plt.ylabel('szögeltérés eloszlása',fontsize = 16)
+plt.xticks(fontsize = 14)
+plt.yticks(fontsize = 14)
+plt.legend(fontsize = 10)
+plt.grid()
+
+
