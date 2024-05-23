@@ -1,2 +1,2 @@
 # Szakdolgozat
-Proton tomográfiás detektorrendszer jeleinek kiértékelése
+Proton tomográfiás detektorrendszer jeleinek kiértékelése.
